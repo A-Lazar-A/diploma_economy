@@ -1,0 +1,13 @@
+[project]
+name = "diploma-economy"
+version = "0.1.0"
+description = "Streamlit-приложение для расчета экономической части дипломного проекта"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.2.0",
+    "streamlit>=1.40.0",
+]
+
+[tool.uv]
+package = false

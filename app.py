@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
+import tomllib
 
 import pandas as pd
 import streamlit as st
@@ -16,9 +18,21 @@ st.set_page_config(
 WORK_COLUMNS = ["№ этапа", "Название работы", "T_min", "T_max", "Исполнитель"]
 SALARY_COLUMNS = ["Исполнитель", "Оклад"]
 EQUIPMENT_COLUMNS = ["Название", "Кол-во", "Цена", "Срок амортизации в днях"]
+LOCAL_DEFAULTS_PATH = Path(__file__).with_name("local_defaults.toml")
+
+
+def load_local_defaults() -> dict:
+    if not LOCAL_DEFAULTS_PATH.exists():
+        return {}
+    with LOCAL_DEFAULTS_PATH.open("rb") as file:
+        return tomllib.load(file)
 
 
 def default_works_df() -> pd.DataFrame:
+    config = load_local_defaults()
+    works = config.get("works", [])
+    if works:
+        return pd.DataFrame(works, columns=WORK_COLUMNS).reset_index(drop=True)
     return pd.DataFrame(
         [
             {
@@ -41,6 +55,10 @@ def default_works_df() -> pd.DataFrame:
 
 
 def default_equipment_df() -> pd.DataFrame:
+    config = load_local_defaults()
+    equipment = config.get("equipment", [])
+    if equipment:
+        return pd.DataFrame(equipment, columns=EQUIPMENT_COLUMNS).reset_index(drop=True)
     return pd.DataFrame(
         [
             {
@@ -55,12 +73,13 @@ def default_equipment_df() -> pd.DataFrame:
 
 
 def init_state() -> None:
+    config = load_local_defaults()
     if "works_seed" not in st.session_state:
         st.session_state.works_seed = default_works_df()
     if "equipment_seed" not in st.session_state:
         st.session_state.equipment_seed = default_equipment_df()
     if "salary_store" not in st.session_state:
-        st.session_state.salary_store = {"Аналитик": 80000.0, "Инженер": 90000.0}
+        st.session_state.salary_store = config.get("salary_store", {"Аналитик": 80000.0, "Инженер": 90000.0})
     if "latex_output" not in st.session_state:
         st.session_state.latex_output = ""
 
@@ -379,30 +398,283 @@ def dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return visible_df.reset_index(drop=True)
 
 
-def build_latex_table(title: str, df: pd.DataFrame) -> str:
-    visible_df = df[[column for column in df.columns if not column.startswith("_")]].copy()
-    column_spec = "|" + "|".join(["l"] * len(visible_df.columns)) + "|"
-    header = " & ".join(latex_escape(column) for column in visible_df.columns) + r" \\ \hline"
+def wrap_longtable(lines: list[str]) -> str:
+    return "\n".join(["{", *lines, "}"])
 
-    if visible_df.empty:
-        body = rf"\multicolumn{{{len(visible_df.columns)}}}{{|c|}}{{Нет данных}} \\ \hline"
-    else:
-        body = "\n".join(
-            " & ".join(latex_escape(row[column]) for column in visible_df.columns) + r" \\ \hline"
-            for _, row in visible_df.iterrows()
+
+def build_table_1_latex(table_1_df: pd.DataFrame) -> str:
+    rows: list[str] = []
+    grouped = table_1_df.groupby("№ этапа", sort=True)
+    for _, stage_df in grouped:
+        stage_rows = stage_df.reset_index(drop=True)
+        span = len(stage_rows)
+        for idx, (_, row) in enumerate(stage_rows.iterrows()):
+            stage_cell = rf"\multirow{{{span}}}{{*}}{{{latex_escape(row['№ этапа'])}}}" if idx == 0 else ""
+            rows.append(
+                " & ".join(
+                    [
+                        stage_cell,
+                        latex_escape(row["№ работы"]),
+                        latex_escape(row["Содержание работы"]),
+                        latex_escape(row["T_min (чел/часы)"]),
+                        latex_escape(row["T_max (чел/часы)"]),
+                        latex_escape(row["T (чел/часы)"]),
+                        latex_escape(row["T (чел/дни)"]),
+                        latex_escape(row["Трудовые ресурсы"]),
+                    ]
+                )
+                + (r" \\ \hhline{~-------}" if idx < span - 1 else r" \\ \hline")
+            )
+
+    if not rows:
+        rows = [r"\multicolumn{8}{|c|}{Нет данных} \\ \hline"]
+
+    return wrap_longtable(
+        [
+            r"\fontsize{10}{10}\selectfont",
+            r"\setlength{\tabcolsep}{3pt}",
+            "",
+            r"\begin{longtable}{|c|c|p{4cm}|p{1.6cm}|p{1.6cm}|p{1.5cm}|p{1.6cm}|p{2.5cm}|}",
+            r"\caption{Оценка трудоемкости работ проекта}\label{tab:tab2} \\",
+            r"\hline",
+            r"№ этапа & № работы & Содержание работы & T\_min (чел/час) & T\_max (чел/час) & T\newline(чел/час) & T\newline(чел/дни) & Трудовые ресурсы \\ \hline",
+            r"\endfirsthead",
+            "",
+            r"\caption*{Продолжение таблицы \ref{tab:tab2}}\\ \hline",
+            r"№ этапа & № работы & Содержание работы & T\_min (чел/час) & T\_max (чел/час) & T (чел/час) & T (чел/дни) & Трудовые ресурсы \\ \hline",
+            r"\endhead",
+            "",
+            r"\hline",
+            r"\endfoot",
+            "",
+            r"\hline",
+            r"\endlastfoot",
+            "",
+            *rows,
+            "",
+            r"\end{longtable}",
+        ]
+    )
+
+
+def build_table_2_latex(table_2_df: pd.DataFrame) -> str:
+    rows = []
+    for _, row in table_2_df.iterrows():
+        rows.append(
+            " & ".join(
+                [
+                    latex_escape(row["№"]),
+                    latex_escape(row["Событие"]),
+                    latex_escape(row["Работа"]),
+                    latex_escape(row["Трудоёмкость (чел/часы)"]),
+                    latex_escape(row["Трудоёмкость (чел/дни)"]),
+                    latex_escape(row["Код работы"]),
+                    latex_escape(row["Вид связи"]),
+                    latex_escape(row["Ресурсы"]),
+                ]
+            )
+            + r" \\ \hline"
         )
 
-    return "\n".join(
+    if not rows:
+        rows = [r"\multicolumn{8}{|c|}{Нет данных} \\ \hline"]
+
+    return wrap_longtable(
         [
-            r"\begin{table}[ht]",
-            r"\centering",
-            rf"\caption{{{latex_escape(title)}}}",
-            rf"\begin{{tabular}}{{{column_spec}}}",
+            r"\fontsize{12}{14}\selectfont",
+            r"\setlength{\tabcolsep}{3pt}",
+            "",
+            r"\begin{longtable}{|c|p{2.3cm}|p{4.1cm}|p{1.5cm}|p{1.5cm}|p{1.2cm}|p{1.2cm}|p{2.9cm}|}",
+            r"\caption{Соответствие событий и работ}\label{tab:tab3} \\",
             r"\hline",
-            header,
-            body,
-            r"\end{tabular}",
-            r"\end{table}",
+            r"№ & Событие & Работа & Т (ч) & Т (дн) & Код  & Вид & Исполнитель \\ \hline",
+            r"\endfirsthead",
+            "",
+            r"\caption*{Продолжение таблицы \ref{tab:tab3}}\\ \hline",
+            r"№ & Событие & Работа & Т (ч) & Т (дн) & Код  & Вид & Исполнитель \\ \hline",
+            r"\endhead",
+            "",
+            r"\hline",
+            r"\endfoot",
+            "",
+            r"\hline",
+            r"\endlastfoot",
+            "",
+            *rows,
+            "",
+            r"\end{longtable}",
+        ]
+    )
+
+
+def build_table_3_latex(table_3_df: pd.DataFrame) -> str:
+    rows = [
+        " & ".join(
+            [
+                latex_escape(row["№ этапа"]),
+                latex_escape(row["Код работы"]),
+                latex_escape(row["T_{i-j} (чел/дни)"]),
+                latex_escape(row["T_i^P (чел/дни)"]),
+                latex_escape(row["T_i^П (чел/дни)"]),
+                latex_escape(row["R_i (чел/дни)"]),
+                latex_escape(row["R_{i-j}^П (чел/дни)"]),
+                latex_escape(row["R_{i-j}^С (чел/дни)"]),
+            ]
+        )
+        + r" \\ \hline"
+        for _, row in table_3_df.iterrows()
+    ]
+    if not rows:
+        rows = [r"\multicolumn{8}{|c|}{Нет данных} \\ \hline"]
+
+    return wrap_longtable(
+        [
+            r"% \fontsize{10}{10}\selectfont",
+            r"% \setlength{\tabcolsep}{3pt}",
+            r"% \small",
+            "",
+            r"\begin{longtable}{|c|c|p{1.6cm}|p{1.6cm}|p{1.6cm}|c|c|c|}",
+            r"\caption{Параметры сетевого графа}\label{tab:tab4} \\",
+            r"\hline",
+            r"№ этапа & Код работы & $T_{i-j}$ & $T_i^{P}$ & $T_i^{П}$ & $R_i$ & $R_{i-j}^{П}$  & $R_{i-j}^{С}$ \\ \hline",
+            r"\endfirsthead",
+            "",
+            r"\caption*{Продолжение таблицы \ref{tab:tab4}}\\ \hline",
+            r"№ этапа & Код работы & $T_{i-j}$ & $T_i^{P}$ & $T_i^{П}$ & $R_i$ & $R_{i-j}^{П}$ & $R_{i-j}^{С}$ \\ \hline",
+            r"\endhead",
+            "",
+            r"\hline",
+            r"\endfoot",
+            "",
+            r"\hline",
+            r"\endlastfoot",
+            "",
+            *rows,
+            "",
+            r"\end{longtable}",
+        ]
+    )
+
+
+def build_table_4_latex(table_4_df: pd.DataFrame) -> str:
+    rows = [
+        " & ".join(
+            [
+                latex_escape(row["Исполнитель"]),
+                latex_escape(row["Оклад"]),
+                latex_escape(row["Оклад с налогами"]),
+                latex_escape(row["Дневной оклад"]),
+                latex_escape(row["Затраты времени (дни)"]),
+                latex_escape(row["Итого ЗП"]),
+            ]
+        )
+        + r" \\ \hline"
+        for _, row in table_4_df.iterrows()
+    ]
+    if not rows:
+        rows = [r"\multicolumn{6}{|c|}{Нет данных} \\ \hline"]
+
+    return wrap_longtable(
+        [
+            r"% \fontsize{10}{10}\selectfont",
+            r"% \setlength{\tabcolsep}{3pt}",
+            "",
+            r"\begin{longtable}{|p{3.2cm}|c|p{2.2cm}|p{2.2cm}|p{2.4cm}|p{2.4cm}|}",
+            r"\caption{Расчет заработной платы}\label{tab:tab5} \\",
+            r"\hline",
+            r"Исполнитель & Оклад & Оклад \newline с налогами & Дневной \newline оклад & Затраты \newline времени (дни) & Итого ЗП \\ \hline",
+            r"\endfirsthead",
+            "",
+            r"\caption*{Продолжение таблицы \ref{tab:tab5}}\\ \hline",
+            r"Исполнитель & Оклад & Оклад \newline с налогами & Дневной \newline оклад & Затраты \newline времени (дни) & Итого ЗП \\ \hline",
+            r"\endhead",
+            "",
+            r"\hline",
+            r"\endfoot",
+            "",
+            r"\hline",
+            r"\endlastfoot",
+            "",
+            *rows,
+            "",
+            r"\end{longtable}",
+        ]
+    )
+
+
+def build_table_5_latex(table_5_df: pd.DataFrame) -> str:
+    rows = [
+        " & ".join(
+            [
+                latex_escape(row["Название"]),
+                latex_escape(row["Кол-во"]),
+                latex_escape(row["Цена"]),
+                latex_escape(row["Срок амортизации в днях"]),
+                latex_escape(row["Амортизация"]),
+            ]
+        )
+        + r" \\ \hline"
+        for _, row in table_5_df.iterrows()
+    ]
+    if not rows:
+        rows = [r"\multicolumn{5}{|c|}{Нет данных} \\ \hline"]
+
+    return wrap_longtable(
+        [
+            "",
+            r"\begin{longtable}{|c|c|c|c|c|}",
+            r"\caption{Затраты на оборудование}\label{tab:tab6} \\",
+            r"\hline",
+            r"Название & Кол-во & Цена & Срок амортизации \newline в днях & Амортизация \\ \hline",
+            r"\endfirsthead",
+            "",
+            r"\caption*{Продолжение таблицы \ref{tab:tab6}}\\ \hline",
+            r"Название & Кол-во & Цена & Срок амортизации \newline в днях & Амортизация \\ \hline",
+            r"\endhead",
+            "",
+            r"\hline",
+            r"\endfoot",
+            "",
+            r"\hline",
+            r"\endlastfoot",
+            "",
+            *rows,
+            "",
+            r"\end{longtable}",
+        ]
+    )
+
+
+def build_table_6_latex(table_6_df: pd.DataFrame) -> str:
+    rows = [
+        " & ".join([latex_escape(row["Статья"]), latex_escape(row["Сумма"])]) + r" \\ \hline"
+        for _, row in table_6_df.iterrows()
+    ]
+    if not rows:
+        rows = [r"\multicolumn{2}{|c|}{Нет данных} \\ \hline"]
+
+    return wrap_longtable(
+        [
+            "",
+            r"\begin{longtable}{|c|c|}",
+            r"\caption{Итоговая смета}\label{tab:tab7} \\",
+            r"\hline",
+            r"Статья & Сумма \\ \hline",
+            r"\endfirsthead",
+            "",
+            r"\caption*{Продолжение таблицы \ref{tab:tab7}}\\ \hline",
+            r"Статья & Сумма \\ \hline",
+            r"\endhead",
+            "",
+            r"\hline",
+            r"\endfoot",
+            "",
+            r"\hline",
+            r"\endlastfoot",
+            "",
+            *rows,
+            "",
+            r"\end{longtable}",
         ]
     )
 
@@ -417,12 +689,16 @@ def generate_all_latex_tables(
 ) -> str:
     return "\n\n".join(
         [
-            build_latex_table("Оценка трудоемкости работ проекта", table_1_df),
-            build_latex_table("Основные работы и события проекта", table_2_df),
-            build_latex_table("Параметры сетевой модели", table_3_df),
-            build_latex_table("Расчет заработной платы", table_4_df),
-            build_latex_table("Затраты на оборудование", table_5_df),
-            build_latex_table("Итоговая смета", table_6_df),
+            r"% Requires: \usepackage{longtable}",
+            r"% Requires: \usepackage{multirow}",
+            r"% Requires: \usepackage{hhline}",
+            "",
+            build_table_1_latex(table_1_df),
+            build_table_2_latex(table_2_df),
+            build_table_3_latex(table_3_df),
+            build_table_4_latex(table_4_df),
+            build_table_5_latex(table_5_df),
+            build_table_6_latex(table_6_df),
         ]
     )
 
